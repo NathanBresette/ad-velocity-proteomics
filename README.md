@@ -38,18 +38,27 @@ All data derive from the **Alzheimer's Disease Neuroimaging Initiative (ADNI)**,
 ## Repository Structure
 
 ```
+figures/
+├── fig1_prediction_performance.png       # Model comparison bars + quintile calibration plots
+├── fig2_biological_interpretation.png    # SHAP feature importance (top 20 predictors)
+├── fig3_drug_stratification.png          # Cardiometabolic vs. control drug quintile dose-response
+├── fig4_clinical_trial_enrichment.png    # ProCoVA sample size reduction (CSF, plasma, clinical)
+├── figS1_plasma_quintile_calibration.png # Supplementary: plasma Model B quintile calibration
+└── figS2_plasma_shap.png                 # Supplementary: plasma SHAP (FABP3 highlighted)
+
 scripts/
-├── build_cdrsb_slope_dataset.py     # Build primary MRM dataset with CDR-SB slopes and drug flags
-├── parse_nulisa.py                  # Parse NULISA long-format data, pivot to wide, align with ADNI
-├── nulisa_plasma_analysis.py        # Plasma Models A and B (LASSO + GBM, tuned hyperparameters)
-├── nulisa_plasma_drug.py            # Plasma drug stratification analysis
-├── plasma_pooled_cardio_did.py      # Plasma pooled cardiometabolic DiD (null result)
-├── pooled_cardio_did.py             # CSF pooled cardiometabolic DiD
-├── procova_variance_reduction.py    # ProCoVA ANCOVA sample size reduction formula
-├── feature_importance_biology.py    # SHAP analysis for TMT discovery model
-├── build_table1.py                  # Table 1 cohort characteristics with p-values
-├── generate_figures.py              # All main manuscript figures (Fig 1–4)
-└── generate_supplementary_figures.py  # Supplementary figures (S1 plasma calibration, S2 plasma SHAP)
+├── build_cdrsb_slope_dataset.py          # Build primary MRM dataset with CDR-SB slopes and drug flags
+├── parse_nulisa.py                       # Parse NULISA long-format data, pivot to wide, align with ADNI
+├── export_csf_proteomics.R               # R script for extracting CSF proteomics data from ADNI
+├── nulisa_plasma_analysis.py             # Plasma Models A and B (LASSO + GBM, tuned hyperparameters)
+├── nulisa_plasma_drug.py                 # Plasma drug stratification analysis
+├── plasma_pooled_cardio_did.py           # Plasma pooled cardiometabolic DiD (null result)
+├── pooled_cardio_did.py                  # CSF pooled cardiometabolic DiD
+├── procova_variance_reduction.py         # ProCoVA ANCOVA sample size reduction formula
+├── feature_importance_biology.py         # SHAP analysis for TMT discovery model
+├── build_table1.py                       # Table 1 cohort characteristics with p-values
+├── generate_figures.py                   # All main manuscript figures (Fig 1–4)
+└── generate_supplementary_figures.py     # Supplementary figures (S1 plasma calibration, S2 plasma SHAP)
 ```
 
 ## TMT Discovery Cohort Analysis
