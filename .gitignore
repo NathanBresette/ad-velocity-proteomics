@@ -1,0 +1,36 @@
+# Data files — ADNI data is access-controlled, never commit
+*.csv
+*.rdata
+*.RData
+*.xlsx
+*.json
+*.feather
+*.parquet
+
+# Exceptions: keep requirements and any non-data text files
+!requirements.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+.venv/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs and temp
+*.log
+*.out
+/tmp/
