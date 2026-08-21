@@ -17,7 +17,9 @@ from scipy.stats import pearsonr
 BASE    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(BASE, "results")
 EXT_DIR = os.path.join(BASE, "external_validation", "results")
-FIG_DIR = os.path.join(BASE, "figures")
+FIG_DIR = os.environ.get("FIG_OUT_DIR") or os.path.join(BASE, "figures")
+# 300 dpi for the manuscript body; export FIG_DPI=600 for the MDPI upload set
+FIG_DPI = int(os.environ.get("FIG_DPI", "300"))
 os.makedirs(FIG_DIR, exist_ok=True)
 
 # Style
@@ -32,13 +34,43 @@ plt.rcParams.update({
     "figure.dpi": 300,
 })
 
-# Color palette
-C_CLINICAL = "#2471A3"   # muted blue  — clinical baseline
-C_CSF      = "#A93226"   # muted red   — CSF protein (SHAP fig)
-C_COMBINED = "#A93226"   # muted red   — CSF + clinical
+# Color palette — Okabe-Ito colorblind-safe, one fixed meaning per hue across ALL figures
+C_CLINICAL = "#0072B2"   # blue      — clinical baseline
+C_CSF      = "#D55E00"   # vermilion — CSF protein / CSF signal (SHAP fig, drug stratification)
+C_COMBINED = "#D55E00"   # vermilion — CSF + clinical
 C_NULL     = "#D5D8DC"
-C_EXT      = "#6C3483"   # muted purple — external validation (TMT→MRM)
-C_PLASMA   = "#D4780A"   # muted orange — plasma NULISA (colorblind-safe vs red CSF)
+C_EXT      = "#CC79A7"   # purple/pink — external validation (TMT→MRM)
+C_PLASMA   = "#E69F00"   # orange    — plasma NULISA
+PANEL_FS   = 13          # uniform panel-letter title size across all figures
+
+# ── Typography scaling ───────────────────────────────────────────────────────
+# Every figure is placed at 6.5in (the text column) in the manuscript, so the
+# on-page point size of any label is  literal_pt * FS * 6.5 / figure_width_in.
+# set_scale() picks FS per figure so that all six render at the same on-page
+# size regardless of how wide the matplotlib canvas is.
+TARGET_PT_PER_IN = 1.50   # ~10pt on the page; raise this to enlarge every figure
+_TYPICAL_LITERAL = 9.5
+FS = 1.0
+
+
+def fs(n):
+    return n * FS
+
+
+def set_scale(width_in):
+    """Set the font scale for a figure whose canvas is `width_in` inches wide."""
+    global FS
+    FS = TARGET_PT_PER_IN * width_in / _TYPICAL_LITERAL
+    plt.rcParams.update({
+        "font.size":        10 * FS,
+        "axes.labelsize":   10 * FS,
+        "xtick.labelsize":  9 * FS,
+        "ytick.labelsize":  9 * FS,
+        "legend.fontsize":  9 * FS,
+        "axes.linewidth":   0.8 * max(1.0, FS * 0.6),
+        "xtick.major.width": 0.8 * max(1.0, FS * 0.6),
+        "ytick.major.width": 0.8 * max(1.0, FS * 0.6),
+    })
 
 # Category colors for proteins
 CAT_COLORS = {
@@ -132,19 +164,34 @@ def clean_drug(d):
 # B: TMT quintile calibration
 # C: TMT→MRM quintile calibration
 # ============================================================================
-fig1, axes1 = plt.subplots(1, 3, figsize=(18, 6))
+set_scale(11)
+fig1 = plt.figure(figsize=(11, 9.2))
+_gs1 = fig1.add_gridspec(2, 2, height_ratios=[0.92, 1.0],
+                         hspace=0.30, wspace=0.26)
+axes1 = [fig1.add_subplot(_gs1[0, :]),
+         fig1.add_subplot(_gs1[1, 0]),
+         fig1.add_subplot(_gs1[1, 1])]
 
 ext_c        = ext_perf[ext_perf["section"] == "C_TMT_to_MRM"]
 tmt_full_r2  = ext_perf[ext_perf["section"] == "B_TMT_native_full"]["r2"].values[0]
-tmt_clin_r2  = ext_perf[ext_perf["section"] == "B_clinical"]["r2"].values[0] if \
-    len(ext_perf[ext_perf["section"] == "B_clinical"]) > 0 else \
-    perf[perf["model"] == "A_clinical"]["oof_r2"].values[0]
+tmt_clin_r2  = ext_perf[ext_perf["section"] == "B_TMT_native_clinical"]["r2"].values[0]
 
 N_BINS = 5
 
-def quintile_calibration(ax, df, pred_col, true_col, r2, color, title, extra_text=""):
+# CDR-SB slopes are stored as points per MONTH (linregress on ADNI visit month
+# "M"); Table 1 and Figure 3 report points per YEAR. Convert for display so all
+# figures share the paper's stated unit. R2/r are scale-invariant and unchanged.
+MONTHS_PER_YEAR = 12
+
+
+def quintile_calibration(ax, df, pred_col, true_col, r2, color, title, extra_text="",
+                         r_override=None, stats_fs=9.5, headroom=0.0):
     d = df.dropna(subset=[pred_col, true_col]).copy()
+    d[pred_col] = d[pred_col] * MONTHS_PER_YEAR
+    d[true_col] = d[true_col] * MONTHS_PER_YEAR
     r, _ = pearsonr(d[pred_col], d[true_col])
+    if r_override is not None:
+        r = r_override
     d["bin"] = pd.qcut(d[pred_col], N_BINS, labels=False)
     bins = d.groupby("bin").agg(
         mean_pred=(pred_col, "mean"),
@@ -155,31 +202,34 @@ def quintile_calibration(ax, df, pred_col, true_col, r2, color, title, extra_tex
     ax.errorbar(bins["mean_pred"], bins["mean_obs"],
                 yerr=1.96 * bins["se_obs"],
                 fmt="o", color=color, ms=9, lw=1.8, capsize=5, capthick=1.5,
-                ecolor=color, alpha=0.85, zorder=4, label="Quintile mean ± 95% CI")
+                ecolor=color, alpha=0.85, zorder=4)
     lo = min(bins["mean_pred"].min(), bins["mean_obs"].min()) - 0.005
     hi = max(bins["mean_pred"].max(), bins["mean_obs"].max()) + 0.005
-    ax.plot([lo, hi], [lo, hi], "k--", lw=1, alpha=0.45, label="Identity")
+    ax.plot([lo, hi], [lo, hi], "k--", lw=1, alpha=0.45)
     z  = np.polyfit(bins["mean_pred"], bins["mean_obs"], 1)
     xs = np.linspace(lo, hi, 100)
     ax.plot(xs, np.polyval(z, xs), color=color, lw=1.4, ls="-", alpha=0.5)
-    ax.set_xlabel("Mean Predicted CDR-SB Slope (pts/yr)")
-    ax.set_ylabel("Mean Observed CDR-SB Slope (pts/yr)")
-    ax.set_title(title, fontweight="bold", loc="left", fontsize=12)
+    ax.set_xlabel("Predicted CDR-SB Slope (pts/yr)", fontsize=fs(10))
+    ax.set_ylabel("Observed CDR-SB Slope (pts/yr)", fontsize=fs(10))
+    ax.set_title(title, fontweight="bold", loc="left", fontsize=fs(13))
     stats = f"$R^2$ = {r2:.3f}\nr = {r:.3f}\nn = {len(d):,}"
     if extra_text:
         stats += f"\n{extra_text}"
-    ax.text(0.05, 0.92, stats, transform=ax.transAxes, fontsize=9,
+    if headroom:
+        # open space at the top so the stats box never sits on the data
+        _y0, _y1 = ax.get_ylim()
+        ax.set_ylim(_y0, _y1 + headroom * (_y1 - _y0))
+    ax.text(0.04, 0.96, stats, transform=ax.transAxes, fontsize=fs(stats_fs),
             verticalalignment="top",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-    ax.legend(fontsize=7.5, loc="lower right")
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
 
 # ── Panel A: Model comparison bars (4 bars) ──────────────────────────────────
 ax = axes1[0]
 bar_labels = [
-    "Clinical\nOnly",
-    "Clinical\n+ CSF\n(n=1,060)",
-    "External\nValidation\nTMT→MRM\n(n=279)",
-    "Plasma\nNULISA\n(n=279,\nsame pts)",
+    "Clinical\nonly",
+    "Clinical + CSF\n(n=1,060)",
+    "External val.\nTMT→MRM (n=279)",
+    "Plasma NULISA\n(n=279)",
 ]
 bar_colors = [C_CLINICAL, C_COMBINED, C_EXT, C_PLASMA]
 bar_vals   = [tmt_clin_r2, tmt_full_r2, ext_c["r2"].values[0], plasma_perf["r2_modelB"]]
@@ -189,33 +239,36 @@ ax.bar(range(4), bar_vals, color=bar_colors, width=0.55, edgecolor="white", line
 ax.errorbar(range(4), bar_vals, yerr=bar_stds,
             fmt="none", ecolor="black", capsize=4, capthick=1, lw=1)
 ax.set_xticks(range(4))
-ax.set_xticklabels(bar_labels, fontsize=8)
-ax.set_ylabel("$R^2$")
-ax.set_ylim(0, max(bar_vals) + 0.16)
-# ΔR² arrow between clinical and CSF-full
+ax.set_xticklabels(bar_labels, fontsize=fs(9))
+ax.set_ylabel("$R^2$", fontsize=fs(11))
+ax.set_ylim(0, max(bar_vals) + 0.26)
+# ΔR² bracket spanning the clinical and clinical+CSF bars
 delta = tmt_full_r2 - tmt_clin_r2
-ax.annotate("", xy=(1, tmt_full_r2 + 0.015), xytext=(0, tmt_clin_r2 + 0.015),
-            arrowprops=dict(arrowstyle="<->", color="black", lw=1))
-ax.text(0.5, max(tmt_clin_r2, tmt_full_r2) + 0.03,
-        f"$\\Delta R^2$ = +{delta:.3f}", ha="center", fontsize=8)
+_bt = max(tmt_clin_r2, tmt_full_r2) + 0.105
+ax.plot([0, 0, 1, 1], [tmt_clin_r2 + 0.072, _bt, _bt, tmt_full_r2 + 0.072],
+        color="0.25", lw=1.0, clip_on=False)
+ax.text(0.5, _bt + 0.008, f"$\\Delta R^2$ = +{delta:.3f}",
+        ha="center", va="bottom", fontsize=fs(9.5), color="0.15")
 for i, (v, sd) in enumerate(zip(bar_vals, bar_stds)):
-    ax.text(i, v + sd + 0.01, f"{v:.3f}", ha="center", fontsize=8)
-ax.set_title("A", fontweight="bold", loc="left", fontsize=12)
+    ax.text(i, v + sd + 0.008, f"{v:.3f}", ha="center", fontsize=fs(9.5))
+ax.set_title("A", fontweight="bold", loc="left", fontsize=fs(13))
 
 # ── Panel B: TMT Discovery — quintile calibration (n=1,060) ─────────────────
 quintile_calibration(axes1[1], tmt_preds, "y_pred_tmt", "y_true",
                      r2=tmt_full_r2, color=C_COMBINED,
-                     title="B")
+                     title="B", extra_text="p < 0.001",
+                     stats_fs=8, headroom=0.28)
 
 # ── Panel C: External Validation — quintile calibration TMT→MRM (n=279) ─────
 ext_v = ext_preds.dropna(subset=["y_pred"])
 quintile_calibration(axes1[2], ext_v, "y_pred", "y_true",
                      r2=ext_c["r2"].values[0], color=C_EXT,
-                     title="C",
-                     extra_text="p = 6.0×10$^{-26}$\nZero sample overlap")
+                     title="C", r_override=ext_c["r"].values[0],
+                     extra_text="p < 0.001",
+                     stats_fs=8, headroom=0.28)
 
-fig1.tight_layout(w_pad=3)
-fig1.savefig(os.path.join(FIG_DIR, "fig1_prediction_performance.png"), dpi=300, bbox_inches="tight")
+fig1.tight_layout(pad=1.4, h_pad=2.0, w_pad=2.4)
+fig1.savefig(os.path.join(FIG_DIR, "fig1_prediction_performance.png"), dpi=FIG_DPI, bbox_inches="tight")
 fig1.savefig(os.path.join(FIG_DIR, "fig1_prediction_performance.pdf"), bbox_inches="tight")
 print("Saved Figure 1")
 
@@ -227,25 +280,27 @@ print("Saved Figure 1")
 CLINICAL_SET = {"ADAS13", "FAQ", "AGE", "PTEDUCAT", "APOE4", "CDRSB", "MMSE"}
 
 top20_shap = shap_imp[shap_imp["selected"]].head(20).copy().iloc[::-1].reset_index(drop=True)
+top20_shap["mean_abs_shap"] = top20_shap["mean_abs_shap"] * MONTHS_PER_YEAR
 top20_shap["label"] = top20_shap["feature"].str.replace("TMT_", "", regex=False)
 colors2 = [C_CLINICAL if row["feature"] in CLINICAL_SET else C_CSF
            for _, row in top20_shap.iterrows()]
 
+set_scale(9)
 fig2, ax2 = plt.subplots(1, 1, figsize=(9, 6))
 
 ax2.barh(range(len(top20_shap)), top20_shap["mean_abs_shap"].values, color=colors2,
          edgecolor="white", linewidth=0.3, height=0.7)
 ax2.set_yticks(range(len(top20_shap)))
-ax2.set_yticklabels(top20_shap["label"].values, fontsize=9)
-ax2.set_xlabel("Mean |SHAP Value| (CDR-SB pts/yr per unit)", fontsize=9.5)
-ax2.set_title("A", fontweight="bold", loc="left", fontsize=14)
+ax2.set_yticklabels(top20_shap["label"].values, fontsize=fs(9))
+ax2.set_xlabel("Mean |SHAP Value| (CDR-SB pts/yr)", fontsize=fs(9.5))
+# single-panel figure: no panel letter
 ax2.grid(axis="x", lw=0.35, alpha=0.3, zorder=1)
 
 handles2 = [
     Patch(facecolor=C_CLINICAL, label="Clinical-cognitive"),
     Patch(facecolor=C_CSF,      label="CSF protein"),
 ]
-ax2.legend(handles=handles2, fontsize=8.5, loc="lower right", framealpha=0.9)
+ax2.legend(handles=handles2, fontsize=fs(8.5), loc="lower right", framealpha=0.9)
 
 PROTEIN_LABELS = {
     "TMT_UCHL1":   "neuronal injury marker",
@@ -272,11 +327,11 @@ for _, row in top20_shap.iterrows():
     lbl = PROTEIN_LABELS.get(row["feature"])
     if lbl:
         ax2.text(x_max * 0.012 + row["mean_abs_shap"], row.name,
-                 lbl, va="center", fontsize=6.8, color="black",
+                 lbl, va="center", fontsize=fs(7.5), color="black",
                  fontstyle="italic")
 
 fig2.tight_layout()
-fig2.savefig(os.path.join(FIG_DIR, "fig2_biological_interpretation.png"), dpi=300, bbox_inches="tight")
+fig2.savefig(os.path.join(FIG_DIR, "fig2_biological_interpretation.png"), dpi=FIG_DPI, bbox_inches="tight")
 fig2.savefig(os.path.join(FIG_DIR, "fig2_biological_interpretation.pdf"), bbox_inches="tight")
 print("Saved Figure 2")
 
@@ -287,8 +342,7 @@ print("Saved Figure 2")
 from matplotlib.patches import Patch as _Patch3
 
 C_UNTREATED = "#BDC3C7"
-C_CARDIO    = "#8E44AD"
-C_CHOLIN    = "#A93226"
+C_CARDIO    = C_CSF       # vermilion — ties cardio stratification back to the CSF signal
 
 _quint_path = os.path.join(EXT_DIR, "section_d_quintile_pooled.csv")
 
@@ -307,6 +361,7 @@ if not os.path.exists(_quint_path):
         tmt_f["ci_hi_yr"] = tmt_f["did_yr"] + 0.3
         tmt_f["did_p"]    = np.nan
         tmt_f = tmt_f.sort_values("did_yr", ascending=True).reset_index(drop=True)
+    set_scale(8)
     fig3, axA = plt.subplots(1, 1, figsize=(8, 5))
     for i, (_, row) in enumerate(tmt_f.iterrows()):
         axA.hlines(i, row["ci_lo_yr"], row["ci_hi_yr"], color="#C39BD3", lw=2.0, zorder=2)
@@ -315,15 +370,15 @@ if not os.path.exists(_quint_path):
         axA.scatter(row["did_yr"], i, color=C_CARDIO, s=120, zorder=5,
                     edgecolors="white", lw=0.8)
         axA.text(tmt_f["ci_hi_yr"].max() + 0.03, i,
-                 f"n={int(row['n_users'])}", va="center", fontsize=8.5, color="black")
+                 f"n={int(row['n_users'])}", va="center", fontsize=fs(8.5), color="black")
     axA.axvline(0, color="black", lw=1.2, alpha=0.5, ls="--", zorder=1)
     axA.set_yticks(np.arange(len(tmt_f)))
     axA.set_yticklabels([clean_drug(d) for d in tmt_f["drug"]],
-                        fontsize=11, fontweight="bold", color="black")
-    axA.set_xlabel("DiD Differential: Fast - Slow Attenuation (CDRSB pts/yr)", fontsize=9)
+                        fontsize=fs(11), fontweight="bold", color="black")
+    axA.set_xlabel("DiD Differential: Fast - Slow Attenuation (CDRSB pts/yr)", fontsize=fs(9))
     axA.set_title("TMT Cohort (n=1,060) | DiD | Target Trial Emulation\n"
                   "(Quintile dose-response figure pending Hellbender job)",
-                  fontweight="bold", loc="left", fontsize=9, pad=8)
+                  fontweight="bold", loc="left", fontsize=fs(9), pad=8)
     axA.grid(axis="x", lw=0.35, alpha=0.3, zorder=0)
     fig3.tight_layout()
 
@@ -336,18 +391,15 @@ else:
 
     _CLASS_COLORS = {
         "cardiometabolic": C_CARDIO,
-        "cholinergic":     C_CHOLIN,
-        "nsaid":           "#1A7A4A",
-        "ppi":             "#B7770D",
+        "nsaid":           "#009E73",   # green — negative control
+        "ppi":             "#56B4E9",   # sky blue — negative control (distinct from plasma orange)
     }
     _CLASS_ANNOT = {
         "cardiometabolic": ("A", ""),
-        "cholinergic":     ("B", ""),
-        "nsaid":           ("C", ""),
-        "ppi":             ("D", ""),
+        "nsaid":           ("B", ""),
+        "ppi":             ("C", ""),
     }
-    _CLASS_ORDER    = ["cardiometabolic", "cholinergic", "nsaid", "ppi"]
-    _have_all_4     = all(c in qdf["drug_class"].values for c in _CLASS_ORDER)
+    _CLASS_ORDER     = ["cardiometabolic", "nsaid", "ppi"]
     _classes_present = [c for c in _CLASS_ORDER if c in qdf["drug_class"].values]
 
     def _draw_quintile_panel(ax, df, treated_color, panel_label, annotation):
@@ -372,24 +424,24 @@ else:
                 sign  = "-" if gap_val > 0 else "+"
                 gcolor = "#4A235A" if gap_val > 0 else "#922B21"
                 ax.text(cx, top + 0.015, f"{sign}{abs(gap_val):.2f}",
-                        ha="center", fontsize=6, fontweight="bold", color=gcolor)
+                        ha="center", fontsize=fs(6), fontweight="bold", color=gcolor)
             y_max = max(y_max,
                         row["nonusers_mean"] + 1.96 * row["nonusers_se"],
                         row["users_mean"]    + 1.96 * row["users_se"])
         ax.set_xticks(centers)
-        ax.set_xticklabels([f"Q{q}" for q in df["quintile"]], fontsize=8)
+        ax.set_xticklabels([f"Q{q}" for q in df["quintile"]], fontsize=fs(8))
         ax.tick_params(axis="x", which="both", bottom=False)
-        ax.set_ylabel("Actual CDRSB Slope (pts/yr)", fontsize=8)
-        ax.set_title(panel_label, fontweight="bold", loc="left", fontsize=9, pad=5)
+        ax.set_ylabel("Observed CDR-SB Slope (pts/yr)", fontsize=fs(9))
+        ax.set_title(panel_label, fontweight="bold", loc="left", fontsize=fs(9), pad=5)
         ax.set_xlim(centers[0] - 0.65, centers[-1] + 0.65)
         ax.set_ylim(0, 2.5)
         ax.grid(axis="y", lw=0.3, alpha=0.35, zorder=0)
 
-    if _have_all_4:
-        fig3, axes3 = plt.subplots(1, 4, figsize=(18, 5.5), gridspec_kw={"wspace": 0.38})
-    else:
-        fig3, axes3 = plt.subplots(1, len(_classes_present), figsize=(13, 5.5),
-                                   gridspec_kw={"wspace": 0.42})
+    set_scale(14)
+    fig3, axes3 = plt.subplots(1, len(_classes_present), figsize=(14, 6.6),
+                               gridspec_kw={"wspace": 0.42})
+    if len(_classes_present) == 1:
+        axes3 = [axes3]
 
     for ax, cls in zip(axes3, _classes_present):
         df_cls = qdf[qdf["drug_class"] == cls].sort_values("quintile").reset_index(drop=True)
@@ -400,16 +452,17 @@ else:
 
     legend_els = [_Patch3(facecolor=C_UNTREATED, alpha=0.9, label="Untreated (non-users)")] + [
         _Patch3(facecolor=_CLASS_COLORS[c], alpha=0.9,
-                label=f"Treated — {c.replace('nsaid','NSAID').replace('ppi','PPI')}")
+                label="Treated: " + c.replace('nsaid', 'NSAID').replace('ppi', 'PPI')
+                                     .replace('cardiometabolic', 'Cardiometabolic'))
         for c in _classes_present
     ]
     fig3.legend(handles=legend_els, loc="lower center",
-                ncol=len(legend_els), fontsize=10, framealpha=0.9,
-                bbox_to_anchor=(0.5, -0.06))
-    fig3.suptitle("Figure 3", fontsize=11, fontweight="bold", y=1.02)
+                ncol=2, fontsize=fs(9.5), framealpha=0.9,
+                columnspacing=1.4, handlelength=1.6,
+                bbox_to_anchor=(0.5, -0.20))
     fig3.tight_layout()
 
-fig3.savefig(os.path.join(FIG_DIR, "fig3_drug_stratification.png"), dpi=300, bbox_inches="tight")
+fig3.savefig(os.path.join(FIG_DIR, "fig3_drug_stratification.png"), dpi=FIG_DPI, bbox_inches="tight")
 fig3.savefig(os.path.join(FIG_DIR, "fig3_drug_stratification.pdf"), bbox_inches="tight")
 print("Saved Figure 3")
 
@@ -418,6 +471,7 @@ print("Saved Figure 3")
 # FIGURE 4: Clinical Trial Enrichment — ProCoVA Sample Size Reduction
 # 3 bars per drug: clinical only | clinical+CSF | plasma NULISA
 # ============================================================================
+set_scale(8)
 fig4, ax4 = plt.subplots(1, 1, figsize=(8, 6))
 
 proc4 = proc_merged[proc_merged["n_users"] >= 25].sort_values(
@@ -447,25 +501,26 @@ ax4.barh(y_csf,    proc4["procova_ss_pct_csf"].values,      height=h4,
 
 ax4.axvline(0, color="black", lw=0.8, alpha=0.35)
 ax4.set_yticks(y4)
-ax4.set_yticklabels(drug_labels4, fontsize=9)
-ax4.set_xlabel("Trial Sample Size Reduction (%)", fontsize=9.5)
-ax4.set_title("Figure 4", fontweight="bold", loc="left", fontsize=12, pad=8)
+ax4.set_yticklabels(drug_labels4, fontsize=fs(9))
+ax4.set_xlabel("Trial Sample Size Reduction (%)", fontsize=fs(9.5))
+# figure number lives in the caption, not the artwork
 ax4.grid(axis="x", lw=0.35, alpha=0.3, zorder=1)
 
 # Label all three bar types
 for i, v in enumerate(proc4["procova_ss_pct_csf"].values):
-    ax4.text(v + 0.3, y_csf[i], f"{v:.1f}%", va="center", fontsize=7, color="black")
+    ax4.text(v + 0.3, y_csf[i], f"{v:.1f}%", va="center", fontsize=fs(7), color="black")
 for i, (v, valid) in enumerate(zip(plasma_vals, plasma_valid)):
     if valid:
         ax4.text(float(v) + 0.3, y_plasma[i], f"{float(v):.1f}%", va="center",
-                 fontsize=7, color="black")
+                 fontsize=fs(7), color="black")
 for i, v in enumerate(proc4["procova_ss_pct_clinical"].values):
-    ax4.text(float(v) + 0.3, y_clin[i], f"{float(v):.1f}%", va="center", fontsize=7, color="black")
+    ax4.text(float(v) + 0.3, y_clin[i], f"{float(v):.1f}%", va="center", fontsize=fs(7), color="black")
 
-ax4.legend(fontsize=8.5, loc="lower right", framealpha=0.92)
+_h4, _l4 = ax4.get_legend_handles_labels()
+ax4.legend(_h4[::-1], _l4[::-1], fontsize=fs(8.5), loc="lower right", framealpha=0.92)
 
 fig4.tight_layout()
-fig4.savefig(os.path.join(FIG_DIR, "fig4_clinical_trial_enrichment.png"), dpi=300,
+fig4.savefig(os.path.join(FIG_DIR, "fig4_clinical_trial_enrichment.png"), dpi=FIG_DPI,
              bbox_inches="tight")
 fig4.savefig(os.path.join(FIG_DIR, "fig4_clinical_trial_enrichment.pdf"), bbox_inches="tight")
 print("Saved Figure 4")
@@ -475,24 +530,21 @@ print("Saved Figure 4")
 # FIGURE S1: Plasma NULISA — Quintile Calibration (Model B, n=279)
 # Same format as Fig 1C for direct visual comparison
 # ============================================================================
+set_scale(6)
 figS1, axS1 = plt.subplots(1, 1, figsize=(6, 5.5))
 
 quintile_calibration(
     axS1, plasma_preds, "y_pred_modelB", "y_true",
     r2=plasma_perf["r2_modelB"], color=C_PLASMA,
-    title="Plasma NULISA — Model B Validation (n=279)",
-    extra_text=(
-        f"p = 5.8×10$^{{-29}}$\n"
-        f"Same 279 patients as CSF validation\n"
-        f"LASSO-selected from 120 proteins"
-    )
+    title="",
+    extra_text="p < 0.001"
 )
-axS1.set_title("S1", fontweight="bold", loc="left", fontsize=12)
+# promoted to a main figure: no supplementary label
 
 figS1.tight_layout()
-figS1.savefig(os.path.join(FIG_DIR, "figS1_plasma_quintile_calibration.png"), dpi=300, bbox_inches="tight")
-figS1.savefig(os.path.join(FIG_DIR, "figS1_plasma_quintile_calibration.pdf"), bbox_inches="tight")
-print("Saved Figure S1 (plasma quintile calibration)")
+figS1.savefig(os.path.join(FIG_DIR, "fig5_plasma_quintile_calibration.png"), dpi=FIG_DPI, bbox_inches="tight")
+figS1.savefig(os.path.join(FIG_DIR, "fig5_plasma_quintile_calibration.pdf"), bbox_inches="tight")
+print("Saved Figure 5 (plasma quintile calibration)")
 
 
 # ============================================================================
@@ -507,6 +559,8 @@ shap_p["feature"] = shap_p["feature"].str.replace("AÎ²", "Aβ", regex=False)
 # Clean display labels
 def clean_plasma_label(f):
     f = f.replace("PLASMAp_BD_", "BD-").replace("PLASMAp_", "")
+    # match the hyphenated style used in the manuscript text
+    f = f.replace("pTau_", "pTau-")
     return f
 
 shap_p["label"] = shap_p["feature"].apply(clean_plasma_label)
@@ -521,21 +575,23 @@ def plasma_bar_color(row):
 
 shap_p["color"] = shap_p.apply(plasma_bar_color, axis=1)
 shap_plot = shap_p.iloc[::-1].reset_index(drop=True)
+shap_plot["shap_mean_abs"] = shap_plot["shap_mean_abs"] * MONTHS_PER_YEAR
 
+set_scale(9)
 figS2, axS2 = plt.subplots(1, 1, figsize=(9, 5.5))
 
 axS2.barh(range(len(shap_plot)), shap_plot["shap_mean_abs"].values,
           color=shap_plot["color"].values, edgecolor="white", linewidth=0.3, height=0.7)
 axS2.set_yticks(range(len(shap_plot)))
-axS2.set_yticklabels(shap_plot["label"].values, fontsize=9)
-axS2.set_xlabel("Mean |SHAP Value| (CDR-SB pts/yr per unit)", fontsize=9.5)
-axS2.set_title("S2", fontweight="bold", loc="left", fontsize=12)
+axS2.set_yticklabels(shap_plot["label"].values, fontsize=fs(9))
+axS2.set_xlabel("Mean |SHAP Value| (CDR-SB pts/yr)", fontsize=fs(9.5))
+# promoted to a main figure: no supplementary label
 axS2.grid(axis="x", lw=0.35, alpha=0.3, zorder=1)
 
 # Annotate severity vs rate
 PLASMA_ANNOT = {
-    "BD-pTau_217":  "disease severity (accumulated damage)",
-    "BD-pTau_231":  "disease severity",
+    "BD-pTau-217":  "disease severity (accumulated damage)",
+    "BD-pTau-231":  "disease severity",
     "NEFL":         "axonal damage (severity)",
     "Aβ42":         "amyloid burden",
     "GFAP":         "astrocyte activation (severity)",
@@ -555,18 +611,18 @@ for _, row in shap_plot.iterrows():
     if lbl:
         color_txt = "#7D6608" if row["is_csf_mapped"] else "#2C3E50"
         axS2.text(x_max_p * 0.012 + row["shap_mean_abs"], row.name,
-                  lbl, va="center", fontsize=6.5, color=color_txt, fontstyle="italic")
+                  lbl, va="center", fontsize=fs(7.5), color=color_txt, fontstyle="italic")
 
 handlesS2 = [
     Patch(facecolor=C_CLINICAL, label="Clinical-cognitive"),
     Patch(facecolor=C_PLASMA,   label="Plasma protein (NULISA)"),
-    Patch(facecolor="#E67E22",  label="CSF-validated (FABP3 — rediscovered independently)"),
+    Patch(facecolor="#E67E22",  label="CSF-validated (FABP3)"),
 ]
-axS2.legend(handles=handlesS2, fontsize=8, loc="lower right", framealpha=0.92)
+axS2.legend(handles=handlesS2, fontsize=fs(8), loc="lower right", framealpha=0.92)
 
 figS2.tight_layout()
-figS2.savefig(os.path.join(FIG_DIR, "figS2_plasma_shap.png"), dpi=300, bbox_inches="tight")
-figS2.savefig(os.path.join(FIG_DIR, "figS2_plasma_shap.pdf"), bbox_inches="tight")
-print("Saved Figure S2 (plasma SHAP)")
+figS2.savefig(os.path.join(FIG_DIR, "fig6_plasma_shap.png"), dpi=FIG_DPI, bbox_inches="tight")
+figS2.savefig(os.path.join(FIG_DIR, "fig6_plasma_shap.pdf"), bbox_inches="tight")
+print("Saved Figure 6 (plasma SHAP)")
 
 print("\nAll figures saved to:", FIG_DIR)
